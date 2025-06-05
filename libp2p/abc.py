@@ -1869,32 +1869,6 @@ class IPubsubRouter(ABC):
 
         """
 
-    async def emit_graft(self, topic: str, id: ID) -> None:
-        """
-        Parameters
-        ----------
-        topic : str
-            The topic to emit.
-        id : ID
-            The identifier of the peer
-
-        """
-        pass
-
-    async def emit_prune(self, topic: str, id: ID) -> None:
-        """
-        Emit prune message to peer
-
-        Parameters
-        ----------
-        topic : str
-            The topic to emit to prune.
-        id : ID
-            The identifier of the peer
-
-        """
-        pass
-
     @abstractmethod
     def remove_peer(self, peer_id: ID) -> None:
         """
@@ -1958,32 +1932,6 @@ class IPubsubRouter(ABC):
             The topic to leave.
 
         """
-
-    def gossip_heartbeat(self) -> dict[ID, dict[str, list[str]]]:
-        """
-        Retrieve the list of peers to gossip heartbeat.
-
-        Returns
-        -------
-        dict[ID, dict[str, list[str]]]
-            A list of all peers to gossip heartbeat.
-
-        """
-        pass
-
-    def mesh_heartbeat(self) -> tuple[dict[ID, list[str]], dict[ID, list[str]]]:
-        """
-        Retrieve the list of peers to graft and prune.
-
-        Returns
-        -------
-        dict[ID, list[str]]
-            A list of all peers to graft.
-        dict[ID, list[str]]
-            A list of all peers to prune.
-
-        """
-        pass
 
 
 class IPubsub(ServiceAPI):
