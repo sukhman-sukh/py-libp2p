@@ -1,5 +1,6 @@
 from collections.abc import (
     Mapping,
+    Sequence,
 )
 from importlib.metadata import version as __version
 from typing import (
@@ -8,6 +9,8 @@ from typing import (
     Type,
     cast,
 )
+
+import multiaddr
 
 from libp2p.abc import (
     IHost,
@@ -149,11 +152,12 @@ def get_default_muxer_options() -> TMuxerOptions:
 
 
 def new_swarm(
-    key_pair: Optional[KeyPair] = None,
-    muxer_opt: Optional[TMuxerOptions] = None,
-    sec_opt: Optional[TSecurityOptions] = None,
-    peerstore_opt: Optional[IPeerStore] = None,
-    muxer_preference: Optional[Literal["YAMUX", "MPLEX"]] = None,
+    key_pair: KeyPair | None = None,
+    muxer_opt: TMuxerOptions | None = None,
+    sec_opt: TSecurityOptions | None = None,
+    peerstore_opt: IPeerStore | None = None,
+    muxer_preference: Literal["YAMUX", "MPLEX"] | None = None,
+    listen_addrs: Sequence[multiaddr.Multiaddr] | None = None,
 ) -> INetworkService:
     """
     Create a swarm instance based on the parameters.
@@ -163,6 +167,7 @@ def new_swarm(
     :param sec_opt: optional choice of security upgrade
     :param peerstore_opt: optional peerstore
     :param muxer_preference: optional explicit muxer preference
+    :param listen_addrs: optional list of multiaddrs to listen on
     :return: return a default swarm instance
 
     Note: Yamux (/yamux/1.0.0) is the preferred stream multiplexer
@@ -175,8 +180,16 @@ def new_swarm(
 
     id_opt = generate_peer_id_from(key_pair)
 
-    # TODO: Parse `listen_addrs` to determine transport
-    transport = TCP()
+    if listen_addrs is None:
+        transport = TCP()
+    else:
+        addr = listen_addrs[0]
+        if addr.__contains__("tcp"):
+            transport = TCP()
+        elif addr.__contains__("quic"):
+            raise ValueError("QUIC not yet supported")
+        else:
+            raise ValueError(f"Unknown transport in listen_addrs: {listen_addrs}")
 
     # Generate X25519 keypair for Noise
     noise_key_pair = create_new_x25519_key_pair()
@@ -223,12 +236,13 @@ def new_swarm(
 
 
 def new_host(
-    key_pair: Optional[KeyPair] = None,
-    muxer_opt: Optional[TMuxerOptions] = None,
-    sec_opt: Optional[TSecurityOptions] = None,
-    peerstore_opt: Optional[IPeerStore] = None,
-    disc_opt: Optional[IPeerRouting] = None,
-    muxer_preference: Optional[Literal["YAMUX", "MPLEX"]] = None,
+    key_pair: KeyPair | None = None,
+    muxer_opt: TMuxerOptions | None = None,
+    sec_opt: TSecurityOptions | None = None,
+    peerstore_opt: IPeerStore | None = None,
+    disc_opt: IPeerRouting | None = None,
+    muxer_preference: Literal["YAMUX", "MPLEX"] | None = None,
+    listen_addrs: Sequence[multiaddr.Multiaddr] | None = None,
 ) -> IHost:
     """
     Create a new libp2p host based on the given parameters.
@@ -239,6 +253,7 @@ def new_host(
     :param peerstore_opt: optional peerstore
     :param disc_opt: optional discovery
     :param muxer_preference: optional explicit muxer preference
+    :param listen_addrs: optional list of multiaddrs to listen on
     :return: return a host instance
     """
     swarm = new_swarm(
@@ -247,6 +262,7 @@ def new_host(
         sec_opt=sec_opt,
         peerstore_opt=peerstore_opt,
         muxer_preference=muxer_preference,
+        listen_addrs=listen_addrs,
     )
 
     if disc_opt is not None:
