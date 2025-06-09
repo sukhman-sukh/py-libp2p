@@ -25,6 +25,7 @@ from libp2p.relay.holepunch import (
 
     DCUtRProtocol,
     DCUTR_PROTOCOL_ID,
+    DCUtRProtocol,
     ReachabilityChecker,
     is_private_ip,
 )
