@@ -21,7 +21,7 @@ from libp2p.peer.id import (
     ID,
 )
 
-logger = logging.getLogger("libp2p.relay.circuit_v2.nat")
+logger = logging.getLogger("libp2p.relay.holepunch.nat")
 
 # Timeout for reachability checks
 REACHABILITY_TIMEOUT = 10  # seconds
@@ -152,126 +152,79 @@ def extract_ip_from_multiaddr(addr: Multiaddr) -> Optional[str]:
     return None
 
 
-class ReachabilityChecker:
+# class ReachabilityChecker:
+#     """
+#     Utility class for checking peer reachability.
+
+#     This class assesses whether a peer's addresses are likely
+#     to be directly reachable or behind NAT.
+#     """
+
+#     def __init__(self, host: IHost):
+#         """
+#         Initialize the reachability checker.
+
+#         Parameters
+#         ----------
+#         host : IHost
+#             The libp2p host
+#         """
+#         self.host = host
+#         self._peer_reachability: dict[ID, bool] = {}
+#         self._known_public_peers: set[ID] = set()
+
+def is_addr_public(addr: Multiaddr) -> bool:
     """
-    Utility class for checking peer reachability.
+    Check if an address is likely to be publicly reachable.
 
-    This class assesses whether a peer's addresses are likely
-    to be directly reachable or behind NAT.
+    Parameters
+    ----------
+    addr : Multiaddr
+        The multiaddr to check
+
+    Returns
+    -------
+    bool
+        True if address is likely public
     """
-
-    def __init__(self, host: IHost):
-        """
-        Initialize the reachability checker.
-
-        Parameters
-        ----------
-        host : IHost
-            The libp2p host
-        """
-        self.host = host
-        self._peer_reachability: dict[ID, bool] = {}
-        self._known_public_peers: set[ID] = set()
-
-    def is_addr_public(self, addr: Multiaddr) -> bool:
-        """
-        Check if an address is likely to be publicly reachable.
-
-        Parameters
-        ----------
-        addr : Multiaddr
-            The multiaddr to check
-
-        Returns
-        -------
-        bool
-            True if address is likely public
-        """
-        # Extract the IP address
-        ip = extract_ip_from_multiaddr(addr)
-        if not ip:
-            return False
-
-        # Check if it's a private IP
-        return not is_private_ip(ip)
-
-    def get_public_addrs(self, addrs: list[Multiaddr]) -> list[Multiaddr]:
-        """
-        Filter a list of addresses to only include likely public ones.
-
-        Parameters
-        ----------
-        addrs : List[Multiaddr]
-            List of addresses to filter
-
-        Returns
-        -------
-        List[Multiaddr]
-            List of likely public addresses
-        """
-        return [addr for addr in addrs if self.is_addr_public(addr)]
-
-    async def check_peer_reachability(self, peer_id: ID) -> bool:
-        """
-        Check if a peer is directly reachable.
-
-        Parameters
-        ----------
-        peer_id : ID
-            The peer ID to check
-
-        Returns
-        -------
-        bool
-            True if peer is likely directly reachable
-        """
-        # Check if we already know
-        if peer_id in self._peer_reachability:
-            return self._peer_reachability[peer_id]
-
-        # Check if peer is connected
-        if self.host.get_network().is_connected(peer_id):
-            # Get the addresses we're connected on
-            conns = self.host.get_network().connections.get(peer_id, [])
-            for conn in conns:
-                addrs = conn.get_transport_addresses()
-                # If any connection doesn't use a relay, peer is reachable
-                if any(not str(addr).startswith("/p2p-circuit") for addr in addrs):
-                    self._peer_reachability[peer_id] = True
-                    return True
-
-        # Get the peer's addresses from peerstore
-        try:
-            addrs = self.host.get_peerstore().addrs(peer_id)
-            # Check if peer has any public addresses
-            public_addrs = self.get_public_addrs(addrs)
-            if public_addrs:
-                self._peer_reachability[peer_id] = True
-                return True
-        except Exception as e:
-            logger.debug("Error getting peer addresses: %s", str(e))
-
-        # Default to not directly reachable
-        self._peer_reachability[peer_id] = False
+    # Extract the IP address
+    ip = extract_ip_from_multiaddr(addr)
+    if not ip:
         return False
 
-    async def check_self_reachability(self) -> tuple[bool, list[Multiaddr]]:
-        """
-        Check if this host is likely directly reachable.
+    # Check if it's a private IP
+    return not is_private_ip(ip)
 
-        Returns
-        -------
-        Tuple[bool, List[Multiaddr]]
-            Tuple of (is_reachable, public_addresses)
-        """
-        # Get all host addresses
-        addrs = self.host.get_addrs()
+def get_public_addrs(addrs: list[Multiaddr]) -> list[Multiaddr]:
+    """
+    Filter a list of addresses to only include likely public ones.
 
-        # Filter for public addresses
-        public_addrs = self.get_public_addrs(addrs)
+    Parameters
+    ----------
+    addrs : List[Multiaddr]
+        List of addresses to filter
 
-        # If we have public addresses, assume we're reachable
-        # This is a simplified assumption - real reachability would need external checking
-        is_reachable = len(public_addrs) > 0
+    Returns
+    -------
+    List[Multiaddr]
+        List of likely public addresses
+    """
+    return [addr for addr in addrs if is_addr_public(addr)]
 
-        return is_reachable, public_addrs
+def is_addr_relayed(addr: Multiaddr) -> bool:
+    """
+    Check if a multiaddr is a relayed address (i.e., uses /p2p-circuit).
+
+    Parameters
+    ----------
+    addr : Multiaddr
+        The multiaddr to check
+
+    Returns
+    -------
+    bool
+        True if the address is relayed (contains /p2p-circuit), False otherwise
+    """
+    # Convert to string and check for /p2p-circuit in the multiaddr
+    return "/p2p-circuit" in str(addr)
+

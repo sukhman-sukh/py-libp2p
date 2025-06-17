@@ -6,6 +6,9 @@ https://github.com/libp2p/specs/blob/master/relay/DCUtR.md
 
 DCUtR enables peers behind NAT to establish direct connections
 using hole punching techniques.
+
+# Note: For better clarity, function docstrings include examples illustrating peer relationships.
+# Here A started the relayed connection with B but B started the holepunching process. 
 """
 
 import logging
@@ -31,8 +34,13 @@ from libp2p.peer.id import (
 from libp2p.tools.async_service import (
     Service,
 )
+from .nat import (
+    is_addr_relayed, 
+    is_addr_public
+)
+from libp2p.relay.holepunch.pb import dcutr_pb2
 
-logger = logging.getLogger("libp2p.relay.circuit_v2.dcutr")
+logger = logging.getLogger("libp2p.relay.holepunch.dcutr")
 
 # Protocol ID for DCUtR
 PROTOCOL_ID = TProtocol("/libp2p/dcutr")
@@ -42,12 +50,30 @@ DIAL_TIMEOUT = 15  # seconds
 SYNC_TIMEOUT = 5  # seconds
 HOLE_PUNCH_TIMEOUT = 30  # seconds
 
+# Maximum number of retries for holepunching
+Max_HOLE_PUNCHING_RETRIES = 3 
+
 # Maximum observed addresses to exchange
 MAX_OBSERVED_ADDRS = 20
 
 # Maximum message size (4KiB as per spec)
 MAX_MESSAGE_SIZE = 4 * 1024
 
+
+from enum import Enum, auto
+
+class HolePunchState(Enum):
+    SUCCESS = auto()
+    ALREADY_CONNECTED = auto()
+    ALREADY_IN_PROGRESS = auto()
+    STREAM_OPEN_FAILED = auto()
+    SEND_CONNECT_FAILED = auto()
+    RECEIVE_CONNECT_FAILED = auto()
+    SYNC_FAILED = auto()
+    HOLE_PUNCH_TIMEOUT = auto()
+    DIAL_FAILED = auto()
+    NO_VALID_ADDRS = auto()
+    UNKNOWN_ERROR = auto()
 
 class DCUtRProtocol(Service):
     """
@@ -70,21 +96,38 @@ class DCUtRProtocol(Service):
         self.host = host
         self.event_started = trio.Event()
         self._hole_punch_attempts: dict[ID, int] = {}
+        # DOUBT: Right now I am considering this direct_connection as already holepunched direct connection and not unilateral direct connection.  
         self._direct_connections: set[ID] = set()
         self._in_progress: set[ID] = set()
 
     async def run(self, *, task_status: Any = trio.TASK_STATUS_IGNORED) -> None:
         """Run the protocol service."""
         # TODO: Implement the service run method that:
-        # 1. Registers the DCUtR protocol handler
-        # 2. Sets the started event
+        try:
+            # Register the DCUtR protocol handlers
+            logger.debug("Registering stream handlers for DCUtR protocol ")
+            self.host.set_stream_handler(PROTOCOL_ID, self._handle_dcutr_stream)
+            logger.debug("Stream handlers registered successfully")
+            
+            self.event_started.set()
+            task_status.started()
+            logger.debug("Protocol service started")
+            
+        finally:
+            try:
+                pass
+                # host_with_handlers = cast(IHostWithStreamHandlers, self.host)
+                # host_with_handlers.remove_stream_handler(PROTOCOL_ID)
+                # host_with_handlers.remove_stream_handler(STOP_PROTOCOL_ID)
+            except Exception as e:
+                logger.error("Error unregistering stream handlers: %s", str(e))
         # 3. Waits for the service to be stopped
         # 4. Unregisters the protocol handler on shutdown
 
     async def _handle_dcutr_stream(self, stream: INetStream) -> None:
         """
         Handle incoming DCUtR streams.
-
+        (DCUtR stream handler in A)
         Parameters
         ----------
         stream : INetStream
@@ -100,9 +143,15 @@ class DCUtRProtocol(Service):
         # 7. Handles the SYNC message for hole punching coordination
         # 8. Performs the hole punch attempt
 
-    async def initiate_hole_punch(self, peer_id: ID) -> bool:
+
+# Tests to implement for this function 
+# 1. No holepunching for already hole punched. 
+# 2. NO holepunching if other peer can be directly connected. 
+# 3. No holepunching if it is already in progress
+    async def initiate_hole_punch(self, peer_id: ID) -> HolePunchState:
         """
         Initiate a hole punch with a peer.
+        (From B -> A)
 
         Parameters
         ----------
@@ -111,20 +160,65 @@ class DCUtRProtocol(Service):
 
         Returns
         -------
-        bool
-            True if hole punch was successful, False otherwise
+        HolePunchState
+            State indicating the result or error of the hole punch attempt
         """
         # TODO: Implement the hole punch initiation that:
-        # 1. Checks if we already have a direct connection
-        # 2. Checks if there's already an active hole punch attempt
-        # 3. Opens a DCUtR stream to the peer
+        
+        # Checks if we already have a direct connection via hole punching
+        if peer_id in self._direct_connections:
+            return HolePunchState.ALREADY_CONNECTED
+        
+        # Check if the peer has any non-relayed, public addresses to attempt UnilateralConnectionUpgrade 
+        peer_addrs = self.host.get_peerstore().peer_info(peer_id).addrs
+        public_addrs = [addr for addr in peer_addrs if is_addr_relayed(addr) and is_addr_public(addr)]
+        if public_addrs and await self.attemptUnilateralConnectionUpgrade(peer_id, public_addrs):
+            return HolePunchState.ALREADY_CONNECTED
+        
+        
+        # Checks if there's already an active hole punch attempt
+        if peer_id in self._in_progress:
+            return HolePunchState.ALREADY_IN_PROGRESS
+        
+        for retries in Max_HOLE_PUNCHING_RETRIES:
+            try:
+                # Opens a DCUtR stream to the peer
+                connection = self.host.get_network().connections.get(peer_id)
+                dcutr_stream = await connection.new_stream(PROTOCOL_ID)
+                obs_addrs_bytes = self._get_observed_addrs()
+                
+                # Prepare the DCUtR protobuf message with type CONNECT and observed addresses
+                msg = dcutr_pb2.HolePunch()
+                msg.type = dcutr_pb2.HolePunch.CONNECT
+                msg.ObsAddrs.extend(obs_addrs_bytes)
+                # INSERT_YOUR_CODE
+                # Serialize the protobuf message
+                msg_bytes = msg.SerializeToString()
+                if len(msg_bytes) > MAX_MESSAGE_SIZE:
+                    logger.debug("DCUtR message too large to send")
+                    return HolePunchState.SEND_CONNECT_FAILED
+                
+                rtt_start_time = trio.current_time()
+                try:
+                    # await trio.to_thread.run_sync(dcutr_stream.write, msg_bytes)
+                    # await trio.to_thread.run_sync(dcutr_stream.send_eof)
+                    dcutr_stream.write
+                except Exception as e:
+                    logger.debug(f"Failed to send DCUtR CONNECT message: {e}")
+                    return HolePunchState.SEND_CONNECT_FAILED
+                
+                break
+            except Exception as e:
+                logger.debug(f"Failed to initiate hole punching to the given peer.")
+                continue
+                
         # 4. Sends a CONNECT message with our observed addresses
         # 5. Receives the peer's CONNECT message
         # 6. Calculates the RTT for synchronization
         # 7. Sends a SYNC message with timing information
         # 8. Performs the synchronized hole punch
         # 9. Verifies the direct connection
-        return False
+        return HolePunchState.UNKNOWN_ERROR
 
     async def _dial_peer(self, peer_id: ID, addr: Multiaddr) -> None:
         """
@@ -157,8 +251,14 @@ class DCUtRProtocol(Service):
             True if we have a direct connection, False otherwise
         """
         # TODO: Implement the direct connection check that:
-        # 1. Checks if the peer is in our direct connections set
-        # 2. If not, checks if the peer is connected through the host
+        
+        # Peer is already in direct connection to out host 
+        if peer_id in self._direct_connections:
+            return True
+        
+        if peer_id in self.host.get_connected_peers():
+            peer_addr: list[Multiaddr] = self.host.get_peerstore().peer_info(peer_id).addrs
+            non_relayed_addrs = [addr for addr in peer_addr if not is_addr_relayed(addr)]
         # 3. If connected, verifies it's a direct connection (not relayed)
         # 4. Updates our direct connections set if needed
         return False
@@ -197,3 +297,28 @@ class DCUtRProtocol(Service):
         # 2. Filters invalid addresses
         # 3. Returns the valid addresses
         return []
+    
+    async def attemptUnilateralConnectionUpgrade(self, peer_id: ID, public_addr_list: list[Multiaddr]) -> bool:
+        """
+        Attempt to establish a direct connection to the peer using the provided public addresses.
+
+        Parameters
+        ----------
+        peer_id : ID
+            The peer ID to connect to.
+        public_addr_list : list[Multiaddr]
+            List of public multiaddrs to try.
+
+        Returns
+        -------
+        bool
+            True if a direct connection was established, False otherwise.
+        """
+        for addr in public_addr_list:
+            try:
+                await self.host.connect_addr(peer_id, addr)
+                return True
+            except Exception as e:
+                logger.debug(f"Failed to connect to {peer_id} at {addr}: {e}")
+                continue
+        return False

@@ -242,6 +242,29 @@ class BasicHost(IHost):
 
         await self._network.dial_peer(peer_info.peer_id)
 
+    async def connect_addr(self, peer_id: ID, addr) -> None:
+        """
+        Ensure there is a connection between this host and the peer
+        with given `peer_id` at the specific `addr`. This will also absorb the address
+        into the peerstore, similar to `connect`, so that future connection attempts
+        can benefit from the known address. If there is already an active connection,
+        this is a no-op. If not, it will attempt to dial the address and raise an
+        exception if unsuccessful.
+
+        :param peer_id: ID of the peer to connect to
+        :param addr: Multiaddr to dial
+        :raises Exception: if connection could not be established
+        """
+        # Add the address to the peerstore for consistency with connect()
+        self.peerstore.add_addrs(peer_id, [addr], 120)
+
+        # If already connected, do nothing
+        if peer_id in self._network.connections:
+            return
+
+        # Try to dial the peer at the given address
+        await self._network.dial_addr(addr, peer_id)
+
     async def disconnect(self, peer_id: ID) -> None:
         await self._network.close_peer(peer_id)
 
@@ -299,3 +322,68 @@ class BasicHost(IHost):
         :return: Connection object if peer is connected, None otherwise
         """
         return self._network.connections.get(peer_id)
+    
+    async def check_peer_reachability(self, peer_id: ID) -> bool:
+        """
+        Check if a peer is directly reachable.
+
+        Parameters
+        ----------
+        peer_id : ID
+            The peer ID to check
+
+        Returns
+        -------
+        bool
+            True if peer is likely directly reachable
+        """
+        # Check if we already know
+        if peer_id in self._peer_reachability:
+            return self._peer_reachability[peer_id]
+
+        # Check if peer is connected
+        if self.host.get_network().is_connected(peer_id):
+            # Get the addresses we're connected on
+            conns = self.host.get_network().connections.get(peer_id, [])
+            for conn in conns:
+                addrs = conn.get_transport_addresses()
+                # If any connection doesn't use a relay, peer is reachable
+                if any(not str(addr).startswith("/p2p-circuit") for addr in addrs):
+                    self._peer_reachability[peer_id] = True
+                    return True
+
+        # Get the peer's addresses from peerstore
+        try:
+            addrs = self.host.get_peerstore().addrs(peer_id)
+            # Check if peer has any public addresses
+            public_addrs = self.get_public_addrs(addrs)
+            if public_addrs:
+                self._peer_reachability[peer_id] = True
+                return True
+        except Exception as e:
+            logger.debug("Error getting peer addresses: %s", str(e))
+
+        # Default to not directly reachable
+        self._peer_reachability[peer_id] = False
+        return False
+
+    async def check_self_reachability(self) -> tuple[bool, list[Multiaddr]]:
+        """
+        Check if this host is likely directly reachable.
+
+        Returns
+        -------
+        Tuple[bool, List[Multiaddr]]
+            Tuple of (is_reachable, public_addresses)
+        """
+        # Get all host addresses
+        addrs = self.host.get_addrs()
+
+        # Filter for public addresses
+        public_addrs = self.get_public_addrs(addrs)
+
+        # If we have public addresses, assume we're reachable
+        # This is a simplified assumption - real reachability would need external checking
+        is_reachable = len(public_addrs) > 0
+
+        return is_reachable, public_addrs
