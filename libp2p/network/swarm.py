@@ -64,6 +64,7 @@ def create_default_stream_handler(network: INetworkService) -> StreamHandlerFn:
 
 class Swarm(Service, INetworkService):
     self_id: ID
+    _observed_addr: Multiaddr
     peerstore: IPeerStore
     upgrader: TransportUpgrader
     transport: ITransport
@@ -85,6 +86,7 @@ class Swarm(Service, INetworkService):
         transport: ITransport,
     ):
         self.self_id = peer_id
+        self._observed_addr = None
         self.peerstore = peerstore
         self.upgrader = upgrader
         self.transport = transport
@@ -115,6 +117,12 @@ class Swarm(Service, INetworkService):
     def get_peer_id(self) -> ID:
         return self.self_id
 
+    def get_observed_addr(self) -> Multiaddr:
+        return self._observed_addr
+    
+    def set_observed_addr(self, obs_addr: Multiaddr) -> None:
+        self._observed_addr = obs_addr
+    
     def set_stream_handler(self, stream_handler: StreamHandlerFn) -> None:
         self.common_stream_handler = stream_handler
 

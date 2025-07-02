@@ -58,6 +58,10 @@ from libp2p.tools.async_service import (
     background_trio_service,
 )
 
+from multiaddr import (
+    Multiaddr,
+)
+
 if TYPE_CHECKING:
     from collections import (
         OrderedDict,

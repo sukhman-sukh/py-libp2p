@@ -40,6 +40,8 @@ from .nat import (
 )
 from libp2p.relay.holepunch.pb import dcutr_pb2
 
+from enum import Enum, auto
+
 logger = logging.getLogger("libp2p.relay.holepunch.dcutr")
 
 # Protocol ID for DCUtR
@@ -60,7 +62,6 @@ MAX_OBSERVED_ADDRS = 20
 MAX_MESSAGE_SIZE = 4 * 1024
 
 
-from enum import Enum, auto
 
 class HolePunchState(Enum):
     SUCCESS = auto()
@@ -97,8 +98,9 @@ class DCUtRProtocol(Service):
         self.event_started = trio.Event()
         self._hole_punch_attempts: dict[ID, int] = {}
         # DOUBT: Right now I am considering this direct_connection as already holepunched direct connection and not unilateral direct connection.  
-        self._direct_connections: set[ID] = set()
-        self._in_progress: set[ID] = set()
+        # self._direct_connections: set[ID] = set()
+        # self._in_progress: set[ID] = set()
+        self._connection_state: dict[ID, HolePunchState] = {}
 
     async def run(self, *, task_status: Any = trio.TASK_STATUS_IGNORED) -> None:
         """Run the protocol service."""
@@ -135,12 +137,36 @@ class DCUtRProtocol(Service):
         """
         # TODO: Implement the stream handler that:
         # 1. Gets the remote peer ID
+        remote_peer_id = stream.muxed_conn.peer_id
         # 2. Checks if there's already an active hole punch attempt
+        if self._connection_state[remote_peer_id] == HolePunchState.ALREADY_IN_PROGRESS:
+            logger.debug("Holepunching already in progress with peer_id: ", remote_peer_id)
+            return
         # 3. Checks if we already have a direct connection
+        if self._connection_state[remote_peer_id] == HolePunchState.ALREADY_CONNECTED:
+            logger.debug("Already connected to peer with peer_id: ", remote_peer_id)
         # 4. Reads and parses the initial CONNECT message
+        resp_bytes = await stream.read(MAX_MESSAGE_SIZE)
+        resp = dcutr_pb2.HolePunch()
+        resp.ParseFromString(resp_bytes)
+        
         # 5. Processes observed addresses from the peer
+        remote_obs_addr = [addr.decode("utf-8") for addr in resp.ObsAddrs]
+        
         # 6. Sends our CONNECT message with our observed addresses
+        obs_addrs_bytes = self._get_observed_addrs()
+        # Prepare the DCUtR protobuf message with type CONNECT and observed addresses
+        msg = dcutr_pb2.HolePunch()
+        msg.type = dcutr_pb2.HolePunch.CONNECT
+        msg.ObsAddrs.extend(obs_addrs_bytes)
+        msg_bytes = msg.SerializeToString()
+        if len(msg_bytes) > MAX_MESSAGE_SIZE:
+            logger.debug("DCUtR message too large to send")
+            self._connection_state[remote_peer_id] = HolePunchState.SEND_CONNECT_FAILED
+            return 
+        
         # 7. Handles the SYNC message for hole punching coordination
+        
         # 8. Performs the hole punch attempt
 
 
@@ -166,7 +192,7 @@ class DCUtRProtocol(Service):
         # TODO: Implement the hole punch initiation that:
         
         # Checks if we already have a direct connection via hole punching
-        if peer_id in self._direct_connections:
+        if self._connection_state[peer_id] == HolePunchState.ALREADY_CONNECTED:
             return HolePunchState.ALREADY_CONNECTED
         
         # Check if the peer has any non-relayed, public addresses to attempt UnilateralConnectionUpgrade 
@@ -177,7 +203,7 @@ class DCUtRProtocol(Service):
         
         
         # Checks if there's already an active hole punch attempt
-        if peer_id in self._in_progress:
+        if self._connection_state[peer_id] == HolePunchState.ALREADY_IN_PROGRESS:
             return HolePunchState.ALREADY_IN_PROGRESS
         
         for retries in Max_HOLE_PUNCHING_RETRIES:
@@ -202,7 +228,7 @@ class DCUtRProtocol(Service):
                 try:
                     # await trio.to_thread.run_sync(dcutr_stream.write, msg_bytes)
                     # await trio.to_thread.run_sync(dcutr_stream.send_eof)
-                    dcutr_stream.write
+                    dcutr_stream.write()
                 except Exception as e:
                     logger.debug(f"Failed to send DCUtR CONNECT message: {e}")
                     return HolePunchState.SEND_CONNECT_FAILED
@@ -253,7 +279,7 @@ class DCUtRProtocol(Service):
         # TODO: Implement the direct connection check that:
         
         # Peer is already in direct connection to out host 
-        if peer_id in self._direct_connections:
+        if self._connection_state[peer_id] == HolePunchState.ALREADY_CONNECTED:
             return True
         
         if peer_id in self.host.get_connected_peers():
